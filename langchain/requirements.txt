@@ -1,0 +1,7 @@
+langchain
+langchain-text-splitters
+langchain-community
+bs4
+langchain[google-genai]
+langchain-google-genai
+langchain-core
