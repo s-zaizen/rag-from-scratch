@@ -5,6 +5,7 @@ from langchain_unstructured import UnstructuredLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.tools import tool
 from langchain.agents import create_agent
+from langchain.agents.structured_output import ProviderStrategy
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -63,7 +64,17 @@ prompt = (
     "あなたは非構造化データからコンテキストを取得できるツールにアクセスできます。"
     "ツールを使ってユーザーの質問に答えてください。"
 )
-agent = create_agent(model, tools, system_prompt=prompt)
+
+schema = {
+    "type": "object",
+    "description": "非構造化データの要約",
+    "properties": {
+        "summary": {"type": "string", "description": "要約した文書"},
+    },
+    "required": ["summary"]
+}
+
+agent = create_agent(model, tools, system_prompt=prompt, response_format=ProviderStrategy(schema))
 
 query = (
     "非構造化データの詳細は何ですか？\n\n"
