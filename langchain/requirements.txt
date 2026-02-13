@@ -5,3 +5,9 @@ bs4
 langchain[google-genai]
 langchain-google-genai
 langchain-core
+langchain-unstructured
+unstructured-client
+unstructured
+unstructured[pdf]
+unstructured[xlsx]
+python-magic
