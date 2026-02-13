@@ -99,8 +99,8 @@ query = (
     "日本語で回答してください。"
 )
 
-for event in agent.stream(
-    {"messages": [{"role": "user", "content": query}]},
-    stream_mode="values",
-):
-    event["messages"][-1].pretty_print()
+result = agent.invoke({"messages": [{"role": "user", "content": query}]})
+
+# TODO: Visualize decision with LangGraph
+# TODO: Evaluate result with LangSmith
+print(result["structured_response"]["summary"])
