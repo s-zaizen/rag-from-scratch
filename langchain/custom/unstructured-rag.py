@@ -49,20 +49,38 @@ _ = vector_store.add_documents(all_splits)
 
 print(f"Split example data into {len(all_splits)} sub-documents.")
 
-@tool(response_format="content_and_artifact")
-def retrieve_context(query: str):
-    """Retrieve information to help answer a query."""
-    retrieved_docs = vector_store.similarity_search(query, k=2)
-    serialized = "\n\n".join(
-        (f"Source: {doc.metadata}\nContent: {doc.page_content}")
-        for doc in retrieved_docs
+retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+
+source_counts: dict[str, int] = {}
+for _doc in all_splits:
+    src = Path(_doc.metadata.get("source", "unknown")).name
+    source_counts[src] = source_counts.get(src, 0) + 1
+source_summary = "\n".join(
+    f"  - {src} ({count} chunks)" for src, count in source_counts.items()
+)
+
+@tool
+def retrieve_context(query: str) -> str:
+    """全ソースを横断して、クエリに近いチャンクを検索して返す。
+
+    Args:
+        query: 検索クエリ。検索に適したキーワードやフレーズに言い換えると精度が上がる。example: "2022年の貿易赤字の要因分析"
+    """
+    docs = retriever.invoke(query)
+    return "\n\n".join(
+        f"[Source: {Path(doc.metadata.get('source', 'unknown')).name}]\n{doc.page_content}"
+        for doc in docs
     )
-    return serialized, retrieved_docs
+
 
 tools = [retrieve_context]
 prompt = (
-    "あなたは非構造化データからコンテキストを取得できるツールにアクセスできます。"
-    "ツールを使ってユーザーの質問に答えてください。"
+    "あなたは複数の非構造化データを検索・要約できるアシスタントです。\n\n"
+    "利用可能なソース:\n"
+    f"{source_summary}\n\n"
+    "ツールの使い分け:\n"
+    "- retrieve_context: 全ソースを横断検索する\n"
+    "回答は必ず取得したコンテキストに基づいてください。"
 )
 
 schema = {
@@ -77,8 +95,8 @@ schema = {
 agent = create_agent(model, tools, system_prompt=prompt, response_format=ProviderStrategy(schema))
 
 query = (
-    "非構造化データの詳細は何ですか？\n\n"
-    "回答を得たら、さらに非構造化データの詳細を要約して、日本語で回答してください。"
+    "非構造化データの要約をしてください。\n\n"
+    "日本語で回答してください。"
 )
 
 for event in agent.stream(
