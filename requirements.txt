@@ -11,3 +11,5 @@ unstructured
 unstructured[pdf]
 unstructured[xlsx]
 python-magic
+grandalf
+ipython

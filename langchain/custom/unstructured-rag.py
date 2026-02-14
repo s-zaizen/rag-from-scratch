@@ -101,6 +101,5 @@ query = (
 
 result = agent.invoke({"messages": [{"role": "user", "content": query}]})
 
-# TODO: Visualize decision with LangGraph
 # TODO: Evaluate result with LangSmith
 print(result["structured_response"]["summary"])
