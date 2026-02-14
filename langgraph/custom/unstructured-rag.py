@@ -34,10 +34,16 @@ file_paths = [
     str(SCRIPT_DIR / "example_data/b1_1_34.xlsx"),
 ]
 
+# PDFチャンキング
+# - by_title: 見出しレベルでチャンク分割
+# - combine_under_n_chars: 小さすぎるチャンクを結合
+# - new_after_n_chars: 大きすぎるチャンクを分割
 loader = UnstructuredLoader(
     file_paths,
-    chunking_strategy="basic",
-    max_characters=1000000,
+    chunking_strategy="by_title",
+    combine_under_n_chars=500,
+    new_after_n_chars=4000,
+    max_characters=8000,
     include_orig_elements=False,
 )
 docs = loader.load()
@@ -65,7 +71,7 @@ print(f"Indexed {len(all_splits)} chunks from {len(source_counts)} sources.")
 # ---------------------------------------------------------------------------
 # 2. Retriever ツールの作成
 # ---------------------------------------------------------------------------
-retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+retriever = vector_store.as_retriever(search_kwargs={"k": 6})
 
 
 @tool
