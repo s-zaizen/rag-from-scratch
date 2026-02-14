@@ -12,6 +12,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from pydantic import BaseModel, Field
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+DATA_DIR = SCRIPT_DIR.parent.parent / "data"
 
 # ---------------------------------------------------------------------------
 # モデル / Embeddings
@@ -28,11 +29,13 @@ vector_store = InMemoryVectorStore(embeddings)
 # ---------------------------------------------------------------------------
 # 1. ドキュメント前処理
 # ---------------------------------------------------------------------------
-file_paths = [
-    str(SCRIPT_DIR / "example_data/004_03_00.pdf"),
-    str(SCRIPT_DIR / "example_data/i2220000.html"),
-    str(SCRIPT_DIR / "example_data/b1_1_34.xlsx"),
-]
+assert DATA_DIR.exists(), f"Data directory not found: {DATA_DIR}"
+file_paths = [str(f) for f in DATA_DIR.iterdir() if f.is_file()]
+assert len(file_paths) > 0, f"No files found in {DATA_DIR}"
+
+print(f"Loading {len(file_paths)} files from {DATA_DIR}:")
+for fp in file_paths:
+    print(f"  - {Path(fp).name}")
 
 # PDFチャンキング
 # - by_title: 見出しレベルでチャンク分割
