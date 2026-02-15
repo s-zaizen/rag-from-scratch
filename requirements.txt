@@ -13,3 +13,6 @@ unstructured[xlsx]
 python-magic
 grandalf
 ipython
+faiss-cpu
+sentence-transformers
+transformers
