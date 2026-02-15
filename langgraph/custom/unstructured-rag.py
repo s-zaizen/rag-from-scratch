@@ -10,6 +10,7 @@ from langchain.tools import tool
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from pydantic import BaseModel, Field
+from unstructured.cleaners.core import clean_extra_whitespace, clean_non_ascii_chars
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = SCRIPT_DIR.parent.parent / "data"
@@ -37,10 +38,11 @@ print(f"Loading {len(file_paths)} files from {DATA_DIR}:")
 for fp in file_paths:
     print(f"  - {Path(fp).name}")
 
-# PDFチャンキング
+# ドキュメント読み込み（post_processorsでノイズ除去）
 # - by_title: 見出しレベルでチャンク分割
 # - combine_under_n_chars: 小さすぎるチャンクを結合
 # - new_after_n_chars: 大きすぎるチャンクを分割
+# - post_processors: 余分な空白・非ASCII文字をクリーンアップ
 loader = UnstructuredLoader(
     file_paths,
     chunking_strategy="by_title",
@@ -48,6 +50,7 @@ loader = UnstructuredLoader(
     new_after_n_chars=4000,
     max_characters=8000,
     include_orig_elements=False,
+    post_processors=[clean_extra_whitespace, clean_non_ascii_chars],
 )
 docs = loader.load()
 assert len(docs) > 0, "No documents loaded"
@@ -72,9 +75,20 @@ source_summary = "\n".join(
 print(f"Indexed {len(all_splits)} chunks from {len(source_counts)} sources.")
 
 # ---------------------------------------------------------------------------
-# 2. Retriever ツールの作成
+# 2. Retriever ツールの作成（MMR検索で多様性を確保）
 # ---------------------------------------------------------------------------
-retriever = vector_store.as_retriever(search_kwargs={"k": 6})
+# MMR (Maximal Marginal Relevance) 検索:
+# - fetch_k: 候補として取得するドキュメント数
+# - k: 最終的に返すドキュメント数
+# - lambda_mult: 関連性(1.0)と多様性(0.0)のバランス
+retriever = vector_store.as_retriever(
+    search_type="mmr",
+    search_kwargs={
+        "k": 8,  # 最終的に返すドキュメント数
+        "fetch_k": 20,  # MMR候補プールのサイズ
+        "lambda_mult": 0.7,  # 関連性重視（0.5=バランス、1.0=関連性のみ）
+    },
+)
 
 
 @tool
@@ -97,11 +111,16 @@ retriever_tool = retrieve_documents
 class SummaryState(MessagesState):
     """要約ワークフロー用の拡張 State。
 
-    MessagesState の messages に加え、カバレッジ判定結果を保持する。
+    MessagesState の messages に加え、カバレッジ判定結果と試行回数を保持する。
     assess_coverage が verdict を書き込み、coverage_route が参照する。
     """
 
     coverage_verdict: str  # "sufficient" or "insufficient"
+    retrieval_count: int  # 検索試行回数
+
+
+# 最大検索試行回数（この回数に達したら強制的に要約フェーズへ）
+MAX_RETRIES = 3
 
 
 # ---------------------------------------------------------------------------
@@ -168,10 +187,17 @@ ASSESS_COVERAGE_PROMPT = (
     "ユーザーのリクエスト: {question}\n\n"
     "利用可能なソース:\n{source_info}\n\n"
     "これまでに取得された全コンテキスト:\n{context}\n\n"
-    "以下の観点で、要約を書くための情報が十分に揃っているか評価してください:\n"
-    "1. ソース網羅性: 全ソースから情報が取得されているか？\n"
-    "2. テーマ網羅性: 各ソースの主要テーマ・数値・結論がカバーされているか？\n"
-    "3. 情報量: 包括的な要約を作成するのに十分な情報量があるか？\n\n"
+    "【重要な判断基準】\n"
+    "『完全な網羅』ではなく、『実用的な要約が作成できるか』で判断してください。\n\n"
+    "sufficient と判定する条件（いずれかを満たせばOK）:\n"
+    "- 複数のソースから情報が取得できている\n"
+    "- 主要なテーマや数値データが含まれている\n"
+    "- ユーザーが求める要約の概要を伝えられる情報量がある\n\n"
+    "insufficient と判定するのは以下の場合のみ:\n"
+    "- ほぼ情報が取得できていない\n"
+    "- 全く異なるトピックの情報しかない\n\n"
+    "現在の試行回数: {retry_count} / {max_retries}\n"
+    "試行回数が多い場合は、現状の情報で要約可能と判断してください。\n\n"
     "評価結果を構造化して回答してください。"
 )
 
@@ -201,6 +227,7 @@ def assess_coverage(state: SummaryState) -> dict:
       不足を補う検索を計画できる（旧 refine_search の役割を吸収）
     """
     question = state["messages"][0].content
+    current_count = state.get("retrieval_count", 0)
 
     # 全 ToolMessage を収集（累積コンテキスト）
     tool_messages = [m for m in state["messages"] if isinstance(m, ToolMessage)]
@@ -210,6 +237,8 @@ def assess_coverage(state: SummaryState) -> dict:
         question=question,
         source_info=source_summary,
         context=all_context,
+        retry_count=current_count + 1,
+        max_retries=MAX_RETRIES,
     )
 
     assessment = (
@@ -231,14 +260,26 @@ def assess_coverage(state: SummaryState) -> dict:
     return {
         "messages": [AIMessage(content="\n".join(analysis_parts))],
         "coverage_verdict": assessment.verdict,
+        "retrieval_count": current_count + 1,
     }
 
 
 def coverage_route(
     state: SummaryState,
 ) -> Literal["generate_summary", "plan_retrieval"]:
-    """assess_coverage が書き込んだ verdict に基づいてルーティングする。"""
-    if state.get("coverage_verdict") == "sufficient":
+    """assess_coverage が書き込んだ verdict と試行回数に基づいてルーティングする。
+
+    - sufficient → generate_summary
+    - insufficient & 試行回数 < MAX_RETRIES → plan_retrieval（再検索）
+    - insufficient & 試行回数 >= MAX_RETRIES → generate_summary（強制終了）
+    """
+    verdict = state.get("coverage_verdict", "insufficient")
+    count = state.get("retrieval_count", 0)
+
+    if verdict == "sufficient":
+        return "generate_summary"
+    if count >= MAX_RETRIES:
+        # 最大試行回数に達したら強制的に要約へ
         return "generate_summary"
     return "plan_retrieval"
 
